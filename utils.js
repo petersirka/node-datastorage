@@ -17,3 +17,7 @@ exports.parseIndex = function(id) {
 };
 
 exports.noop = function() {};
+
+String.prototype.trim = function() {
+	return this.replace(/^[\s]+|[\s]+$/g, '');
+};
