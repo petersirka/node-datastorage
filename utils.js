@@ -18,6 +18,22 @@ exports.parseIndex = function(id) {
 
 exports.noop = function() {};
 
-String.prototype.trim = function() {
-	return this.replace(/^[\s]+|[\s]+$/g, '');
-};
+if (!String.prototype.padLeft) {
+	String.prototype.padLeft = function(max, c) {
+		var self = this.toString();
+		return new Array(Math.max(0, max - self.length + 1)).join(c || ' ') + self;
+	};
+}
+
+if (!String.prototype.padRight) {
+	String.prototype.padRight = function(max, c) {
+		var self = this.toString();
+		return self + new Array(Math.max(0, max - self.length + 1)).join(c || ' ');
+	};
+}
+
+if (!String.prototype.trim) {
+	String.prototype.trim = function() {
+		return this.replace(/^[\s]+|[\s]+$/g, '');
+	};
+}

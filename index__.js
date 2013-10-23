@@ -1,139 +1,319 @@
-// Copyright Peter Širka, Web Site Design s.r.o. (www.petersirka.sk)
-//
-// Permission is hereby granted, free of charge, to any person obtaining a
-// copy of this software and associated documentation files (the
-// "Software"), to deal in the Software without restriction, including
-// without limitation the rights to use, copy, modify, merge, publish,
-// distribute, sublicense, and/or sell copies of the Software, and to permit
-// persons to whom the Software is furnished to do so, subject to the
-// following conditions:
-//
-// The above copyright notice and this permission notice shall be included
-// in all copies or substantial portions of the Software.
-//
-// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
-// OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
-// MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN
-// NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM,
-// DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR
-// OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE
-// USE OR OTHER DEALINGS IN THE SOFTWARE.
-
-var utils = require('./utils');
-var path = require('path');
 var fs = require('fs');
-var events = require('events');
+var path = require('path');
 
-const EXTENSION_HEADER = '.header';
-const EXTENSION_SCHEMA = '.schema';
-const EXTENSION_DOC = '.json';
-const EXTENSION_CHANGELOG = '.log';
-const EXTENSION_TMP = '.tmp';
+const HEADER_VERSION = 'v0.0.1';
+const HEADER_LENGTH  = 2048;
+const STRING_LENGTH  = 50;
+const STRING_SIZE    = 2;
+const FIELD_ALLOCATE = 4 + 4 + 4 + 8 + 8;
 
-const LENGTH_DIRECTORY = 9;
+const NUMBER = 'number';
+const STRING = 'number';
+const DATE = 'date';
 
-const STRING = 'string';
-const BOOLEAN = 'boolean';
-const JPEG = 'image/jpeg';
-const PNG = 'image/png';
-const GIF = 'image/gif';
-const ENCODING = 'utf8';
+// FILE RECORD
+
+// index     (int)
+// state     (int)
+// count     (int)
+// created   (int)
+// updated   (int)
 
 function Header() {
+	this.version = HEADER_VERSION;
+	this.schema = {};
+	this.size = 0;
 	this.index = 0;
 	this.count = 0;
-	this.schema = {};
 }
 
 function DataStorage(filename) {
 
-	this.path = path.dirname(filename);
 	this.filename = filename;
 	this.name = path.basename(filename).replace(path.extname(filename), '');
 	this.directory = path.dirname(filename);
-	this.header = new Header();
-	this.cache = {};
 
 	this.onPrepare = function(doc) {
 		return doc;
 	};
 
+	this.onProperty = function(property, value) {
+		return value;
+	};
+
+	this.header = new Header();
+	this.current = null;
+
+	this.headerRead();
 }
 
-DataStorage.prototype = new events.EventEmitter();
+DataStorage.prototype.headerWrite = function() {
 
-/*
-	===============================================================
-	INTERNAL
-	===============================================================
-*/
-
-DataStorage.prototype._verification = function() {
 	var self = this;
-	self._mkdir(self.path, true);
-	self._load();
+
+	fs.open(self.filename, 'w', function(err, fd) {
+
+		self._headerWrite(fd, function() {
+			fs.close(fd);
+		});
+
+	});
+
 	return self;
 };
 
-DataStorage.prototype._load = function() {
+DataStorage.prototype._headerWrite = function(fd, cb) {
+
 	var self = this;
-	var filename = path.join(self.path, self.name + EXTENSION_HEADER);
+	var buf = new Buffer(HEADER_LENGTH, 'binary');
+	var len = buf.write(JSON.stringify(self.header));
+	buf.fill('\0', len);
 
-	if (!fs.existsSync(filename))
-		return self;
+	fs.write(fd, buf, 0, HEADER_LENGTH, 0, function() {
+		if (cb)
+			cb()
+	});
+}
 
-	var json = fs.readFileSync(filename, ENCODING).toString();
-	if (json.length === 0)
-		return self;
+DataStorage.prototype.headerRead = function() {
 
-	self.header = JSON.parse(json);
+	var self = this;
+
+	fs.open(self.filename, 'r', function(err, fd) {
+
+		if (err)
+			return;
+
+		fs.read(fd, new Buffer(HEADER_LENGTH), 0, HEADER_LENGTH, 0, function(err, bytes, buffer) {
+
+			var header = buffer.toString('utf8');
+			var index = header.indexOf('\0');
+
+			if (index !== -1)
+				header = header.substring(0, index);
+
+			self.header = JSON.parse(header);
+			self.headerRefresh();
+
+		});
+
+		fs.close(fd);
+	});
+
 	return self;
 };
 
-DataStorage.prototype._mkdir = function(directory, noPath) {
+DataStorage.prototype.schema = function(definition) {
+	var self = this;
+	self.header.schema = definition;
+	self.headerRefresh();
+	self.headerWrite();
+	return self;
+};
+
+DataStorage.prototype.headerRefresh = function() {
 
 	var self = this;
-	var cache = self.cache;
+	var properties = Object.keys(self.header.schema);
+	var length = properties.length;
+	var size = 0;
 
-	if (!noPath)
-		directory = path.join(self.path, directory);
+	self.current = {};
 
-	var key = 'directory-' + directory;
+	for (var i = 0; i < length; i++) {
 
-	if (cache[key])
-		return true;
+		var prop = properties[i];
+		var type = self.header.schema[prop].toLowerCase();
+		var index = type.indexOf('(');
+		var additional = parseInt(index !== -1 ? type.substring(index + 1, type.length - 1) : '0', 10);
+		var bufsize = 0;
 
-	if (!fs.existsSync(directory))
-		fs.mkdirSync(directory);
+		if (index !== -1)
+			type = type.substring(0, index);
 
-	cache[key] = true;
-	return true;
-};
+		switch (type) {
 
-DataStorage.prototype._directory_index = function(index) {
-	return Math.floor(index / 1000) + 1;
-};
+			case 'str':
+			case 'text':
+			case 'varchar':
+			case 'string':
+			case 'nvarchar':
 
-DataStorage.prototype._directory = function(index, isDirectory) {
+				type = 'string';
+
+				if (additional <= 0)
+					additional = STRING_LENGTH;
+
+				bufsize = additional * STRING_SIZE;
+				break;
+
+			case 'int':
+			case 'integer':
+			case 'long':
+			case 'number':
+				type = 'number';
+				bufsize = 4;
+				break;
+
+			case 'date':
+			case 'datetime':
+			case 'time':
+				type = 'date';
+				bufsize = 8;
+				break;
+
+			case 'single':
+			case 'decimal':
+				type = 'float';
+				bufsize = 4;
+				break;
+
+			default:
+
+				type = '';
+				break;
+		}
+
+		if (type.length === 0)
+			continue;
+
+		size += bufsize + FIELD_ALLOCATE;
+		self.current[prop] = { type: type, length: additional, size: bufsize };
+	}
+
+	self.header.size = size;
+	return self;
+}
+
+DataStorage.prototype.insert = function(doc) {
+
 	var self = this;
-	var options = self.options;
-	var id = (isDirectory ? index : self._directory_index(index)).toString().padLeft(LENGTH_DIRECTORY, '0');
-	var length = id.length;
-	var directory = '';
 
-	for (var i = 0; i < length; i++)
-		directory += (i % 3 === 0 && i > 0 ? '-' : '') + id[i];
+	fs.open(self.filename, 'a', function(err, fd) {
 
-	return path.join(self.path, directory);
+		if (err)
+			throw err;
+
+		var size = self.header.size;
+		var buffer = new Buffer(size);
+
+		var properties = Object.keys(self.current);
+		var length = properties.length;
+		var offset = 0;
+
+		doc = self.onPrepare(doc);
+
+		self.header.index++;
+		self.header.count++;
+
+		buffer.writeInt32LE(self.header.index, offset);
+		offset += 4;
+
+		buffer.writeInt32LE(1, offset);
+		offset += 4;
+
+		buffer.writeDoubleLE(new Date().getTime(), offset);
+		offset += 8;
+
+		buffer.writeDoubleLE(new Date().getTime(), offset);
+		offset += 8;
+
+		for (var i = 0; i < length; i++) {
+
+			var name = properties[i];
+			var property = self.current[name];
+			var value = self.onProperty(name, doc[name]);
+
+			switch (property.type) {
+
+				case 'number':
+
+					if (typeof(value) !== NUMBER)
+						value = parseInt(value || '', 10);
+
+					if (isNaN(value))
+						value = 0;
+
+					buffer.writeInt32LE(value, offset);
+					offset += property.size;
+
+					break;
+
+				case 'float':
+
+					if (typeof(value) !== NUMBER)
+						value = parseFloat(value || '');
+
+					if (isNaN(value))
+						value = 0;
+
+					buffer.writeFloatLE(value, offset);
+					offset += property.size;
+
+					break;
+
+				case 'string':
+
+					if (typeof(value) !== STRING)
+						value = (value || '').toString();
+
+					if (value.length > property.length)
+						value = value.substring(0, property.length);
+
+					var len = buffer.write(value, offset);
+
+					if (len < property.size)
+						buffer.fill('\0', offset + len, offset + len + (property.size - len));
+
+					offset += property.size;
+
+					break;
+
+				case 'date':
+
+					buffer.writeDoubleLE(value.getTime(), offset);
+					offset += property.size;
+
+					break;
+			}
+		}
+
+		fs.write(fd, buffer, 0, buffer.length, HEADER_LENGTH + (self.header.count * self.header.size), function(err) {
+
+			console.log(err);
+
+			self._headerWrite(fd, function() {
+				fs.close(fd);
+			});
+		});
+
+	});
+
 };
 
-DataStorage.prototype._save = function() {
+DataStorage.prototype.all = function(prop, fnFilter, fnCallback) {
 
 	var self = this;
-	var filename = path.join(self.path, self.name + EXTENSION_HEADER);
-	console.log(filename);
-	fs.writeFile(filename, JSON.stringify(self.header), utils.noop);
+
+	fs.open(self.filename, 'r', function(err, fd) {
+
+		var count = self.header.count;
+		var keys = Object.keys(self.current);
+		
+		var buffer = new Buffer();
+		fs.read()
+
+		
+
+	});
 
 };
+
+function prepareString(value) {
+	var index = value.indexOf('\0');
+	if (index === -1)
+		return value;
+	return value.substring(0, index);
+}
 
 module.exports = DataStorage;
