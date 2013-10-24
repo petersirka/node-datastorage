@@ -32,11 +32,12 @@ function read(filename, max, status, callback) {
 			return;
 		}
 
-		read_fd(fd, max, callback, 0, status);
+		var datasource = [];
+		read_fd(fd, max, callback, 0, status, datasource);
 	});
 }
 
-function read_fd(fd, max, callback, offset, status) {
+function read_fd(fd, max, callback, offset, status, datasource) {
 
 	var length = (max || 10) * SIZE;
 	var buffer = new Buffer(length);
@@ -46,21 +47,21 @@ function read_fd(fd, max, callback, offset, status) {
 
 	fs.read(fd, buffer, 0, length, position, function(err, bytes, buffer) {
 
-		if (bytes !== length) {
-			callback(parse(buffer, max, status), true);
+		var stop = parse(buffer, max, status, datasource);
+
+		if (bytes !== length || stop) {
+			callback(datasource, true);
 			fs.close(fd);
 			return;
-		} else
-			callback(parse(buffer, max, status), false);
+		}
 
-		read_fd(fd, max, callback, position + length, status);
+		read_fd(fd, max, callback, position + length, status, datasource);
 
 	});
 }
 
-function parse(buffer, max, status) {
+function parse(buffer, max, status, datasource) {
 
-	var arr = [];
 	var length = buffer.length;
 	var current = 0;
 
@@ -72,12 +73,15 @@ function parse(buffer, max, status) {
 		var state = buffer.readUInt16LE(current);
 		current += 2;
 
-		if (state === status)
-			arr.push(id);
+		if (state === status) {
+			datasource.push(id);
+			if (max > 0 && datasource.length >= max)
+				return true;
+		}
 
 	}
 
-	return arr;
+	return false;
 }
 
 function update(filename, id, status, callback) {

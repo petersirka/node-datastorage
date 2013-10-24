@@ -2,7 +2,7 @@ var fs = require('fs');
 var path = require('path');
 var utils = require('./utils');
 var events = require('events');
-var DataStorageView = require('./view');
+var View = require('./views');
 var binary = require('./binary');
 
 const HEADER_VERSION = 'v0.0.1';
@@ -15,6 +15,7 @@ const FILE_DB = 'db.data';
 const NUMBER = 'number';
 const STRING = 'number';
 const DATE = 'date';
+const UNDEFINED = 'undefined';
 
 function DataStorage(directory) {
 
@@ -46,7 +47,7 @@ function DataStorage(directory) {
 	this.mkdir('');
 	this.headerLoad();
 
-	this.views = new DataStorageView(this);
+	this.views = new View(this);
 }
 
 DataStorage.prototype = new events.EventEmitter();
@@ -139,12 +140,61 @@ DataStorage.prototype.insert = function(doc, callback) {
 	return index;
 };
 
+DataStorage.prototype.db = function(max, status, cb) {
+	var self = this;
+	binary.read(path.join(self.directory, FILE_DB), max, status, cb);
+	return self;
+};
+
 DataStorage.prototype.refresh = function(doc, name) {
 
 	var self = this;
-	var arr = [];
 
+	binary.read(path.join(self.directory, FILE_DB), 100, 1, function(arr) {
+		console.log(arr);
+	});
 
+};
+
+DataStorage.prototype.datasource = function(id, fnFilter, callback, source) {
+
+	var self = this;
+	var index = id.shift();
+
+	if (typeof(index) === UNDEFINED) {
+		callback(source);
+		return;
+	}
+
+	var directory = self.directory_name(index);
+	var filename = directory + '/' + index.toString().padLeft(LENGTH_DIRECTORY, '0') + EXTENSION_DOCUMENT;
+
+	fs.readFile(filename, function(err, data) {
+
+		if (!err) {
+
+			try
+			{
+				var json = JSON.parse(data.toString('utf8'));
+				var view = fnFilter(json);
+				
+				if (view !== null && typeof(view) !== UNDEFINED)
+					source.push(view);
+
+			} catch (err) {}
+		}
+
+		self.datasource(id, fnFilter, callback, source);
+
+	});
+
+	return self;
+};
+
+DataStorage.prototype._saveView = function(name, source) {
+	var self = this;
+	fs.writeFile(path.join(self.directory, name + EXTENSION_VIEW), source);
+	return self;
 };
 
 module.exports = DataStorage;
